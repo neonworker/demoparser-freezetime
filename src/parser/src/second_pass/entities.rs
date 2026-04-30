@@ -44,6 +44,8 @@ pub enum EntityType {
     Team,
     Normal,
     C4,
+    Inferno,
+    SmokeProjectile,
 }
 enum EntityCmd {
     Delete,
@@ -331,6 +333,15 @@ impl<'a> SecondPassParser<'a> {
             }
             EntityType::Rules => self.rules_entity_id = Some(*entity_id),
             EntityType::C4 => self.c4_entity_id = Some(*entity_id),
+            EntityType::Inferno => self.inferno_entity_ids.push(*entity_id),         // Sprint 5
+            EntityType::SmokeProjectile => {                                         // Sprint 5
+                // Track smoke entids in their own list AND register in
+                // self.projectiles so collect_projectiles still emits per-tick
+                // smoke trajectory rows (the original Projectile classification
+                // already did this via the name-heuristic fallback).
+                self.smoke_entity_ids.push(*entity_id);
+                self.projectiles.insert(*entity_id);
+            }
             _ => {}
         };
         let entity = Entity {
@@ -371,6 +382,8 @@ impl<'a> SecondPassParser<'a> {
             "CCSGameRulesProxy" => return Ok(EntityType::Rules),
             "CCSTeam" => return Ok(EntityType::Team),
             "CC4" => return Ok(EntityType::C4),
+            "CInferno" => return Ok(EntityType::Inferno),                  // Sprint 5
+            "CSmokeGrenadeProjectile" => return Ok(EntityType::SmokeProjectile),  // Sprint 5
             _ => {}
         }
         let is_projectile_prop =
@@ -388,6 +401,8 @@ fn should_emit_prop_to_listen(prop_name: &str) -> bool {
         Some("CCSTeam") => return true,
         Some("CCSPlayerPawn") => return true,
         Some("CCSPlayerController") => return true,
+        Some("CInferno") => return true,                      // Sprint 5
+        Some("CSmokeGrenadeProjectile") => return true,       // Sprint 5
         _ => {}
     };
     if is_weapon_prop(prop_name) || is_grenade_prop(prop_name) {

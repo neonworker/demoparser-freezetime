@@ -53,6 +53,8 @@ pub struct SecondPassParser<'a> {
     pub uniq_prop_names: AHashSet<String>,
     pub baselines: AHashMap<u32, Vec<u8>, RandomState>,
     pub projectiles: BTreeSet<i32>,
+    pub inferno_entity_ids: Vec<i32>,         // Sprint 5
+    pub smoke_entity_ids: Vec<i32>,           // Sprint 5
     pub fullpackets_parsed: u32,
     pub wanted_players: AHashSet<u64>,
     pub wanted_ticks: AHashSet<i32>,
@@ -204,6 +206,8 @@ impl<'a> SecondPassParser<'a> {
             wanted_events: first_pass_output.settings.wanted_events.clone(),
             parse_entities: first_pass_output.settings.parse_ents,
             projectiles: BTreeSet::default(),
+            inferno_entity_ids: Vec::new(),
+            smoke_entity_ids: Vec::new(),
             baselines: first_pass_output.baselines.clone(),
             string_tables: first_pass_output.string_tables.clone(),
             teams: Teams::new(),

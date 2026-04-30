@@ -59,7 +59,10 @@ pub enum CoordinateAxis {
 impl<'a> SecondPassParser<'a> {
     pub fn collect_entities(&mut self) {
         if !self.prop_controller.event_with_velocity {
-            if !self.wanted_ticks.contains(&self.tick) && self.wanted_ticks.len() != 0 || self.wanted_events.len() != 0 {
+            // Sprint 5: removed `|| self.wanted_events.len() != 0` clause so that
+            // events + projectile dataframe + entity props can collect simultaneously
+            // when parse_projectiles=true.
+            if !self.wanted_ticks.contains(&self.tick) && self.wanted_ticks.len() != 0 {
                 return;
             }
         }
@@ -233,8 +236,11 @@ impl<'a> SecondPassParser<'a> {
     }
 
     pub fn collect_projectiles(&mut self) {
-        for projectile_entid in &self.projectiles {
-            let grenade_type = match self.find_grenade_type(projectile_entid) {              
+        // Collect entity ids first to avoid borrowing self.projectiles while
+        // mutating self.output / self.projectile_records.
+        let projectile_entids: Vec<i32> = self.projectiles.iter().copied().collect();
+        for projectile_entid in &projectile_entids {
+            let grenade_type = match self.find_grenade_type(projectile_entid) {
                 Some(t) => {if !t.contains("Projectile") && !self.parse_grenades{continue}else{t}},
                 None => continue,
             };
@@ -255,6 +261,22 @@ impl<'a> SecondPassParser<'a> {
             } else {
                 (None, None, None)
             };
+
+            // Sprint 5: also push a ProjectileRecord so DemoOutput.projectiles is
+            // actually populated (previously vestigial — only output.df was filled).
+            let xf = match &x { Some(Variant::F32(v)) => Some(*v), _ => None };
+            let yf = match &y { Some(Variant::F32(v)) => Some(*v), _ => None };
+            let zf = match &z { Some(Variant::F32(v)) => Some(*v), _ => None };
+            self.projectile_records.push(ProjectileRecord {
+                steamid: Some(steamid),
+                name: Some(name.clone()),
+                x: xf,
+                y: yf,
+                z: zf,
+                tick: Some(self.tick),
+                grenade_type: Some(grenade_type.clone()),
+                entity_id: Some(*projectile_entid),
+            });
 
             // Insert these always
             let pairs = vec![
