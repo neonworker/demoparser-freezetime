@@ -89,6 +89,11 @@ impl<'a> SecondPassParser<'a> {
                             self.finalize_smoke_record(entity_id, self.tick);
                         }
                     }
+                    // Sprint 5: clean up tracked entity_ids on delete (I1 + I3 from code review).
+                    // These vecs were push-only — pre-fix, post-delete entries produced
+                    // empty InfernoRecord rows (88% noise) and pointless smoke iteration.
+                    self.inferno_entity_ids.retain(|&id| id != entity_id);
+                    self.smoke_entity_ids.retain(|&id| id != entity_id);
                     if let Some(entry) = self.entities.get_mut(entity_id as usize) {
                         *entry = None;
                     }

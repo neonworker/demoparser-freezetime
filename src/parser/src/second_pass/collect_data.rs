@@ -491,17 +491,20 @@ impl<'a> SecondPassParser<'a> {
     /// off a specific entity. Used for one-off scalar reads where the
     /// caller doesn't already have a special-id stashed (e.g.
     /// `m_fireCount`).
+    ///
+    /// Sprint 5 (I2 from code review): O(1) lookup via PropController.name_to_id
+    /// instead of linear scan of prop_infos. This is a hot path —
+    /// called ~200K+ times per parse (per-inferno per-tick + per-smoke-delete
+    /// + per-projectile-tick).
     pub fn get_prop_from_ent_by_name(
         &self,
         entity_id: &i32,
         name: &str,
     ) -> Result<Variant, PropCollectionError> {
-        let prop_id = self
+        let prop_id = *self
             .prop_controller
-            .prop_infos
-            .iter()
-            .find(|p| p.prop_name == name)
-            .map(|p| p.id)
+            .name_to_id
+            .get(name)
             .ok_or(PropCollectionError::GetPropFromEntPropNotFound)?;
         self.get_prop_from_ent(&prop_id, entity_id)
     }
@@ -1434,5 +1437,73 @@ impl std::error::Error for PropCollectionError {}
 impl fmt::Display for PropCollectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convex_hull_empty() {
+        assert_eq!(convex_hull_xy(&[]), Vec::<[f32; 2]>::new());
+    }
+
+    #[test]
+    fn convex_hull_single_point() {
+        let p = [[1.0, 2.0]];
+        assert_eq!(convex_hull_xy(&p), p.to_vec());
+    }
+
+    #[test]
+    fn convex_hull_two_points() {
+        let p = [[0.0, 0.0], [1.0, 1.0]];
+        let h = convex_hull_xy(&p);
+        assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn convex_hull_collinear_three_points() {
+        let p = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
+        let h = convex_hull_xy(&p);
+        // Collinear: hull is the two endpoints.
+        assert!(h.len() <= 2, "collinear points should produce hull of <=2 points, got {}", h.len());
+    }
+
+    #[test]
+    fn convex_hull_triangle() {
+        let p = [[0.0, 0.0], [10.0, 0.0], [5.0, 10.0]];
+        let h = convex_hull_xy(&p);
+        assert_eq!(h.len(), 3);
+    }
+
+    #[test]
+    fn convex_hull_square_with_interior_point() {
+        let p = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [5.0, 5.0]];
+        let h = convex_hull_xy(&p);
+        // Interior point should be discarded.
+        assert_eq!(h.len(), 4);
+        // Verify the interior point isn't in the hull.
+        assert!(!h.iter().any(|p| (p[0] - 5.0).abs() < 0.001 && (p[1] - 5.0).abs() < 0.001));
+    }
+
+    #[test]
+    fn convex_hull_duplicate_points() {
+        let p = [[0.0, 0.0], [0.0, 0.0], [10.0, 0.0], [5.0, 5.0]];
+        let h = convex_hull_xy(&p);
+        // Should dedup; result is a triangle (3 points) or line (2 points if dedup is aggressive).
+        assert!(h.len() == 3 || h.len() == 2);
+    }
+
+    #[test]
+    fn convex_hull_ccw_order() {
+        // Triangle vertices not in CCW order — hull should reorder them CCW.
+        let p = [[5.0, 10.0], [10.0, 0.0], [0.0, 0.0]];
+        let h = convex_hull_xy(&p);
+        assert_eq!(h.len(), 3);
+        // CCW: cross product of (h[1]-h[0]) × (h[2]-h[0]) should be positive.
+        let cross = (h[1][0] - h[0][0]) * (h[2][1] - h[0][1])
+                  - (h[1][1] - h[0][1]) * (h[2][0] - h[0][0]);
+        assert!(cross > 0.0, "expected CCW, got cross={}", cross);
     }
 }
