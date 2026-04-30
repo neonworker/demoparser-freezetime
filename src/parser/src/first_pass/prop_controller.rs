@@ -94,6 +94,15 @@ pub const GRENADE_Y: u32 = 100100024;
 pub const GRENADE_Z: u32 = 100100025;
 pub const INVENTORY_AS_IDS_BITMASK: u32 = 100100026;
 
+// Sprint 5: per-element prop_id offsets for CInferno fixed-size arrays.
+// `m_firePositions: Vector[64]` and `m_bFireIsBurning: bool[64]` need each
+// element to land in its own slot in `entity.props` (otherwise array
+// elements all overwrite the same prop_id key — see how MY_WEAPONS_OFFSET
+// is rewritten in `get_propinfo`). Offsets sized to fit 64 elements
+// each with a wide gap to neighbouring constants.
+pub const INFERNO_FIRE_POSITIONS_OFFSET: u32 = 600000;
+pub const INFERNO_FIRE_IS_BURNING_OFFSET: u32 = 700000;
+
 #[derive(Clone, Debug)]
 pub struct PropController {
     pub id: u32,
@@ -488,6 +497,16 @@ impl PropController {
         }
         if full_name == "CCSPlayerPawn.CCSPlayer_WeaponServices.m_iAmmo"{
             f.prop_id = GRENADE_AMMO_ID;
+        }
+        // Sprint 5: each element of CInferno's fixed-size arrays needs a
+        // unique prop_id so they don't overwrite each other in
+        // `entity.props`. Per-element disambiguation happens in
+        // `get_propinfo` via path index.
+        if full_name == "CInferno.m_firePositions" {
+            f.prop_id = INFERNO_FIRE_POSITIONS_OFFSET;
+        }
+        if full_name == "CInferno.m_bFireIsBurning" {
+            f.prop_id = INFERNO_FIRE_IS_BURNING_OFFSET;
         }
         self.id += 1;
     }

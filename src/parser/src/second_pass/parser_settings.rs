@@ -5,7 +5,7 @@ use crate::first_pass::read_bits::DemoParserError;
 use crate::first_pass::sendtables::Serializer;
 use crate::first_pass::stringtables::StringTable;
 use crate::first_pass::stringtables::UserInfo;
-use crate::second_pass::collect_data::ProjectileRecord;
+use crate::second_pass::collect_data::{InfernoRecord, ProjectileRecord};
 use crate::second_pass::decoder::QfMapper;
 use crate::second_pass::entities::Entity;
 use crate::second_pass::entities::PlayerMetaData;
@@ -60,6 +60,7 @@ pub struct SecondPassParser<'a> {
     pub wanted_ticks: AHashSet<i32>,
     // Output from parsing
     pub projectile_records: Vec<ProjectileRecord>,
+    pub inferno_records: Vec<InfernoRecord>,         // Sprint 5
     pub voice_data: Vec<(i32, CsvcMsgVoiceData)>,
     pub output: AHashMap<u32, PropColumn, RandomState>,
     pub header: HashMap<String, String>,
@@ -146,6 +147,7 @@ impl<'a> SecondPassParser<'a> {
             uniq_prop_names: self.uniq_prop_names,
             prop_info: PropController::new(vec![], vec![], AHashMap::default(), AHashMap::default(), false, &["none".to_string()], false),
             projectiles: self.projectile_records,
+            inferno_records: self.inferno_records,
             ptr: self.ptr,
             df_per_player: self.df_per_player,
             entities: self.entities,
@@ -187,6 +189,7 @@ impl<'a> SecondPassParser<'a> {
             stringtable_players: first_pass_output.stringtable_players,
             is_debug_mode: debug,
             projectile_records: vec![],
+            inferno_records: vec![],
             parse_all_packets: parse_all_packets,
             wanted_players: first_pass_output.wanted_players.clone(),
             wanted_ticks: first_pass_output.wanted_ticks.clone(),

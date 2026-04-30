@@ -4,6 +4,8 @@ use crate::first_pass::parser_settings::needs_velocity;
 use crate::first_pass::parser_settings::FirstPassParser;
 use crate::first_pass::prop_controller::FLASHBANG_AMMO_ID;
 use crate::first_pass::prop_controller::GRENADE_AMMO_ID;
+use crate::first_pass::prop_controller::INFERNO_FIRE_IS_BURNING_OFFSET;
+use crate::first_pass::prop_controller::INFERNO_FIRE_POSITIONS_OFFSET;
 use crate::first_pass::prop_controller::PropController;
 use crate::first_pass::prop_controller::FLATTENED_VEC_MAX_LEN;
 use crate::first_pass::prop_controller::GLOVE_PAINT_ID;
@@ -502,6 +504,16 @@ pub fn get_propinfo(field: &Field, path: &FieldPath) -> Option<FieldInfo> {
     // index 14 seems to be for flashbang ammo...
     if fi.prop_id == GRENADE_AMMO_ID && path.path[2] == 14{
         fi.prop_id = FLASHBANG_AMMO_ID;
+    }
+
+    // Sprint 5: CInferno fixed-size arrays. CInferno's array fields are
+    // top-level on the serializer, so the element index lives at
+    // `path.path[1]` (path[0] is the array field index in CInferno).
+    if fi.prop_id == INFERNO_FIRE_POSITIONS_OFFSET {
+        fi.prop_id = INFERNO_FIRE_POSITIONS_OFFSET + path.path[1] as u32;
+    }
+    if fi.prop_id == INFERNO_FIRE_IS_BURNING_OFFSET {
+        fi.prop_id = INFERNO_FIRE_IS_BURNING_OFFSET + path.path[1] as u32;
     }
 
     if path.path[1] != 1 {

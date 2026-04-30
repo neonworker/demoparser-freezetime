@@ -48,6 +48,59 @@ pub struct ProjectileRecord {
     pub grenade_type: Option<String>,
     pub entity_id: Option<i32>,
 }
+
+#[derive(Debug, Clone)]
+pub struct InfernoRecord {
+    pub entity_id: i32,
+    pub tick: i32,
+    pub fire_count: i32,
+    pub hull_xy: Vec<[f32; 2]>, // CCW convex hull of active flame XY positions
+}
+
+/// Andrew's monotone-chain convex hull. O(n log n). Returns CCW vertices.
+/// For input with <3 unique points, returns the input directly (a 1- or 2-point
+/// "hull" is rendered as point/line by consumers).
+pub(crate) fn convex_hull_xy(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    if points.len() < 3 {
+        return points.to_vec();
+    }
+    let mut pts = points.to_vec();
+    pts.sort_by(|a, b| {
+        a[0].partial_cmp(&b[0]).unwrap()
+            .then(a[1].partial_cmp(&b[1]).unwrap())
+    });
+    pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.001 && (a[1] - b[1]).abs() < 0.001);
+    if pts.len() < 3 {
+        return pts;
+    }
+
+    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| -> f32 {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+
+    let mut lower: Vec<[f32; 2]> = Vec::new();
+    for p in &pts {
+        while lower.len() >= 2
+            && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0
+        {
+            lower.pop();
+        }
+        lower.push(*p);
+    }
+    let mut upper: Vec<[f32; 2]> = Vec::new();
+    for p in pts.iter().rev() {
+        while upper.len() >= 2
+            && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0
+        {
+            upper.pop();
+        }
+        upper.push(*p);
+    }
+    lower.pop();
+    upper.pop();
+    lower.extend(upper);
+    lower
+}
 pub enum CoordinateAxis {
     X,
     Y,
@@ -68,6 +121,7 @@ impl<'a> SecondPassParser<'a> {
         }
         if self.parse_projectiles {
             self.collect_projectiles();
+            self.collect_inferno_records();   // Sprint 5
             return;
         }
         // iterate every player and every wanted prop name
@@ -320,6 +374,78 @@ impl<'a> SecondPassParser<'a> {
                 }
             }
         }
+    }
+
+    /// Sprint 5 — emit one InfernoRecord per tracked CInferno entity per
+    /// tick, with the convex hull of the active flame XY positions.
+    ///
+    /// Reads:
+    ///   - `m_fireCount` (scalar) — looked up by name via `prop_infos`.
+    ///   - `m_firePositions[i]` — looked up at
+    ///     `INFERNO_FIRE_POSITIONS_OFFSET + i` (rewrite added in
+    ///     `get_propinfo` so each element gets a unique prop_id).
+    ///   - `m_bFireIsBurning[i]` — same scheme at
+    ///     `INFERNO_FIRE_IS_BURNING_OFFSET + i`.
+    pub fn collect_inferno_records(&mut self) {
+        // Snapshot to avoid mutable-borrow conflict with self.entities below.
+        let entids: Vec<i32> = self.inferno_entity_ids.clone();
+        for inferno_entid in &entids {
+            // m_fireCount via name lookup — it's not on the per-element
+            // offset path so we resolve it through prop_infos.
+            let fire_count = match self.get_prop_from_ent_by_name(inferno_entid, "m_fireCount") {
+                Ok(Variant::I32(c)) => c,
+                _ => 0,
+            };
+
+            let mut active_xy: Vec<[f32; 2]> = Vec::with_capacity(fire_count.max(0) as usize);
+            // Iterate up to min(fire_count, 64). m_firePositions is a
+            // Vector[64] in CInferno; fire_count is the live count.
+            let upper = (fire_count.max(0) as usize).min(64);
+            for i in 0..upper {
+                let burning_id = INFERNO_FIRE_IS_BURNING_OFFSET + i as u32;
+                let pos_id = INFERNO_FIRE_POSITIONS_OFFSET + i as u32;
+                let burning = match self.get_prop_from_ent(&burning_id, inferno_entid) {
+                    Ok(Variant::Bool(b)) => b,
+                    _ => false,
+                };
+                if !burning {
+                    continue;
+                }
+                let pos = match self.get_prop_from_ent(&pos_id, inferno_entid) {
+                    Ok(Variant::VecXYZ(v)) => v,
+                    _ => continue,
+                };
+                active_xy.push([pos[0], pos[1]]);
+            }
+
+            let hull_xy = convex_hull_xy(&active_xy);
+
+            self.inferno_records.push(InfernoRecord {
+                entity_id: *inferno_entid,
+                tick: self.tick,
+                fire_count,
+                hull_xy,
+            });
+        }
+    }
+
+    /// Helper — look up a prop_id by name in `prop_infos` then read it
+    /// off a specific entity. Used for one-off scalar reads where the
+    /// caller doesn't already have a special-id stashed (e.g.
+    /// `m_fireCount`).
+    pub fn get_prop_from_ent_by_name(
+        &self,
+        entity_id: &i32,
+        name: &str,
+    ) -> Result<Variant, PropCollectionError> {
+        let prop_id = self
+            .prop_controller
+            .prop_infos
+            .iter()
+            .find(|p| p.prop_name == name)
+            .map(|p| p.id)
+            .ok_or(PropCollectionError::GetPropFromEntPropNotFound)?;
+        self.get_prop_from_ent(&prop_id, entity_id)
     }
 
     fn find_weapon_name(&self, entity_id: &i32) -> Result<Variant, PropCollectionError> {

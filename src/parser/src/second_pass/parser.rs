@@ -8,7 +8,7 @@ use crate::first_pass::read_bits::Bitreader;
 use crate::first_pass::read_bits::DemoParserError;
 use crate::first_pass::stringtables::parse_userinfo;
 use crate::maps::demo_cmd_type_from_int;
-use crate::second_pass::collect_data::ProjectileRecord;
+use crate::second_pass::collect_data::{InfernoRecord, ProjectileRecord};
 use crate::second_pass::entities::Entity;
 use crate::second_pass::game_events::GameEvent;
 use crate::second_pass::parser_settings::SecondPassParser;
@@ -49,6 +49,7 @@ pub struct SecondPassOutput {
     pub uniq_prop_names: AHashSet<String>,
     pub prop_info: PropController,
     pub projectiles: Vec<ProjectileRecord>,
+    pub inferno_records: Vec<InfernoRecord>,         // Sprint 5
     pub ptr: usize,
     pub voice_data: Vec<(i32, CsvcMsgVoiceData)>,
     pub df_per_player: AHashMap<u64, AHashMap<u32, PropColumn>>,
