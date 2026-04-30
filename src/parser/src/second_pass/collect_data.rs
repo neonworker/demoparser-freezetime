@@ -55,7 +55,11 @@ pub struct InfernoRecord {
     pub entity_id: i32,
     pub tick: i32,
     pub fire_count: i32,
-    pub hull_xy: Vec<[f32; 2]>, // CCW convex hull of active flame XY positions
+    // Raw active-flame XY positions at this tick (up to 64 entries). The
+    // wrapper's GrenadeFireLayer renders each flame individually so spread
+    // / retreat dynamics are visible — the convex-hull approach hid inner
+    // flicker behind a static outer polygon during steady burn.
+    pub flame_xy: Vec<[f32; 2]>,
 }
 
 /// Sprint 5 — per-smoke-instance metadata captured at entity-delete
@@ -73,50 +77,6 @@ pub struct SmokeRecord {
     pub exploded_from_inferno: bool,    // CSmokeGrenadeProjectile.m_bExplodeFromInferno
 }
 
-/// Andrew's monotone-chain convex hull. O(n log n). Returns CCW vertices.
-/// For input with <3 unique points, returns the input directly (a 1- or 2-point
-/// "hull" is rendered as point/line by consumers).
-pub(crate) fn convex_hull_xy(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    if points.len() < 3 {
-        return points.to_vec();
-    }
-    let mut pts = points.to_vec();
-    pts.sort_by(|a, b| {
-        a[0].partial_cmp(&b[0]).unwrap()
-            .then(a[1].partial_cmp(&b[1]).unwrap())
-    });
-    pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 0.001 && (a[1] - b[1]).abs() < 0.001);
-    if pts.len() < 3 {
-        return pts;
-    }
-
-    let cross = |o: [f32; 2], a: [f32; 2], b: [f32; 2]| -> f32 {
-        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-    };
-
-    let mut lower: Vec<[f32; 2]> = Vec::new();
-    for p in &pts {
-        while lower.len() >= 2
-            && cross(lower[lower.len() - 2], lower[lower.len() - 1], *p) <= 0.0
-        {
-            lower.pop();
-        }
-        lower.push(*p);
-    }
-    let mut upper: Vec<[f32; 2]> = Vec::new();
-    for p in pts.iter().rev() {
-        while upper.len() >= 2
-            && cross(upper[upper.len() - 2], upper[upper.len() - 1], *p) <= 0.0
-        {
-            upper.pop();
-        }
-        upper.push(*p);
-    }
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    lower
-}
 pub enum CoordinateAxis {
     X,
     Y,
@@ -443,13 +403,11 @@ impl<'a> SecondPassParser<'a> {
                 active_xy.push([pos[0], pos[1]]);
             }
 
-            let hull_xy = convex_hull_xy(&active_xy);
-
             self.inferno_records.push(InfernoRecord {
                 entity_id: *inferno_entid,
                 tick: self.tick,
                 fire_count,
-                hull_xy,
+                flame_xy: active_xy,
             });
         }
     }
@@ -1442,70 +1400,3 @@ impl fmt::Display for PropCollectionError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn convex_hull_empty() {
-        assert_eq!(convex_hull_xy(&[]), Vec::<[f32; 2]>::new());
-    }
-
-    #[test]
-    fn convex_hull_single_point() {
-        let p = [[1.0, 2.0]];
-        assert_eq!(convex_hull_xy(&p), p.to_vec());
-    }
-
-    #[test]
-    fn convex_hull_two_points() {
-        let p = [[0.0, 0.0], [1.0, 1.0]];
-        let h = convex_hull_xy(&p);
-        assert_eq!(h.len(), 2);
-    }
-
-    #[test]
-    fn convex_hull_collinear_three_points() {
-        let p = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]];
-        let h = convex_hull_xy(&p);
-        // Collinear: hull is the two endpoints.
-        assert!(h.len() <= 2, "collinear points should produce hull of <=2 points, got {}", h.len());
-    }
-
-    #[test]
-    fn convex_hull_triangle() {
-        let p = [[0.0, 0.0], [10.0, 0.0], [5.0, 10.0]];
-        let h = convex_hull_xy(&p);
-        assert_eq!(h.len(), 3);
-    }
-
-    #[test]
-    fn convex_hull_square_with_interior_point() {
-        let p = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [5.0, 5.0]];
-        let h = convex_hull_xy(&p);
-        // Interior point should be discarded.
-        assert_eq!(h.len(), 4);
-        // Verify the interior point isn't in the hull.
-        assert!(!h.iter().any(|p| (p[0] - 5.0).abs() < 0.001 && (p[1] - 5.0).abs() < 0.001));
-    }
-
-    #[test]
-    fn convex_hull_duplicate_points() {
-        let p = [[0.0, 0.0], [0.0, 0.0], [10.0, 0.0], [5.0, 5.0]];
-        let h = convex_hull_xy(&p);
-        // Should dedup; result is a triangle (3 points) or line (2 points if dedup is aggressive).
-        assert!(h.len() == 3 || h.len() == 2);
-    }
-
-    #[test]
-    fn convex_hull_ccw_order() {
-        // Triangle vertices not in CCW order — hull should reorder them CCW.
-        let p = [[5.0, 10.0], [10.0, 0.0], [0.0, 0.0]];
-        let h = convex_hull_xy(&p);
-        assert_eq!(h.len(), 3);
-        // CCW: cross product of (h[1]-h[0]) × (h[2]-h[0]) should be positive.
-        let cross = (h[1][0] - h[0][0]) * (h[2][1] - h[0][1])
-                  - (h[1][1] - h[0][1]) * (h[2][0] - h[0][0]);
-        assert!(cross > 0.0, "expected CCW, got cross={}", cross);
-    }
-}
