@@ -47,6 +47,7 @@ pub struct ProjectileRecord {
     pub tick: Option<i32>,
     pub grenade_type: Option<String>,
     pub entity_id: Option<i32>,
+    pub bounces: Option<i32>,    // Sprint 5: m_nBounces snapshot at this tick
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +337,12 @@ impl<'a> SecondPassParser<'a> {
             let xf = match &x { Some(Variant::F32(v)) => Some(*v), _ => None };
             let yf = match &y { Some(Variant::F32(v)) => Some(*v), _ => None };
             let zf = match &z { Some(Variant::F32(v)) => Some(*v), _ => None };
+            // Sprint 5 (Task 5): per-tick m_nBounces snapshot. Wrapper-side
+            // walks this for increments to emit BounceEvent rows.
+            let bounces = match self.get_prop_from_ent_by_name(projectile_entid, "m_nBounces") {
+                Ok(Variant::I32(n)) => Some(n),
+                _ => None,
+            };
             self.projectile_records.push(ProjectileRecord {
                 steamid: Some(steamid),
                 name: Some(name.clone()),
@@ -345,6 +352,7 @@ impl<'a> SecondPassParser<'a> {
                 tick: Some(self.tick),
                 grenade_type: Some(grenade_type.clone()),
                 entity_id: Some(*projectile_entid),
+                bounces,
             });
 
             // Insert these always
