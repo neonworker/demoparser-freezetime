@@ -138,7 +138,9 @@ impl<'a> SecondPassParser<'a> {
         if self.parse_projectiles {
             self.collect_projectiles();
             self.collect_inferno_records();   // Sprint 5
-            return;
+            // Sprint 5 fix: fall through to per-player collection below.
+            // Sprint 4 (loadouts) + Sprint 5 (grenades) need projectile data
+            // AND df_per_player populated simultaneously.
         }
         // iterate every player and every wanted prop name
         // if either one is missing then push None to output
