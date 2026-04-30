@@ -80,6 +80,15 @@ impl<'a> SecondPassParser<'a> {
             match cmd {
                 EntityCmd::Delete => {
                     self.projectiles.remove(&entity_id);
+                    // Sprint 5 / Task 4: capture smoke metadata BEFORE the
+                    // entity slot is cleared. m_vSmokeDetonationPos / etc.
+                    // are read off the entity's prop store, which is gone
+                    // once we set entry = None.
+                    if let Some(Some(entity)) = self.entities.get(entity_id as usize) {
+                        if matches!(entity.entity_type, EntityType::SmokeProjectile) {
+                            self.finalize_smoke_record(entity_id, self.tick);
+                        }
+                    }
                     if let Some(entry) = self.entities.get_mut(entity_id as usize) {
                         *entry = None;
                     }

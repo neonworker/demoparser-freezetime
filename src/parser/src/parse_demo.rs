@@ -4,7 +4,7 @@ use crate::first_pass::parser_settings::check_multithreadability;
 use crate::first_pass::parser_settings::{FirstPassParser, ParserInputs};
 use crate::first_pass::prop_controller::{PropController, NAME_ID, STEAMID_ID, TICK_ID};
 use crate::first_pass::read_bits::DemoParserError;
-use crate::second_pass::collect_data::{InfernoRecord, ProjectileRecord};
+use crate::second_pass::collect_data::{InfernoRecord, ProjectileRecord, SmokeRecord};
 use crate::second_pass::game_events::{EventField, GameEvent};
 use crate::second_pass::parser::SecondPassOutput;
 use crate::second_pass::parser_settings::*;
@@ -36,6 +36,7 @@ pub struct DemoOutput {
     pub uniq_prop_names: Vec<String>,
     pub projectiles: Vec<ProjectileRecord>,
     pub inferno_records: Vec<InfernoRecord>,         // Sprint 5
+    pub smoke_records: Vec<SmokeRecord>,             // Sprint 5 / Task 4
     pub voice_data: Vec<(i32, CsvcMsgVoiceData)>,
     pub prop_controller: PropController,
     pub df_per_player: AHashMap<u64, AHashMap<u32, PropColumn>>,
@@ -331,6 +332,7 @@ impl<'a> Parser<'a> {
             game_events_counter: all_game_events,
             projectiles: second_pass_outputs.iter().flat_map(|x| x.projectiles.clone()).collect(),
             inferno_records: second_pass_outputs.iter().flat_map(|x| x.inferno_records.clone()).collect(),
+            smoke_records: second_pass_outputs.iter().flat_map(|x| x.smoke_records.clone()).collect(),
             voice_data: second_pass_outputs.iter().flat_map(|x| x.voice_data.clone()).collect_vec(),
             df_per_player: pp,
             uniq_prop_names: all_prop_names,

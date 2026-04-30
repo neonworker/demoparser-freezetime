@@ -57,6 +57,21 @@ pub struct InfernoRecord {
     pub hull_xy: Vec<[f32; 2]>, // CCW convex hull of active flame XY positions
 }
 
+/// Sprint 5 — per-smoke-instance metadata captured at entity-delete
+/// (smoke expire). One record per CSmokeGrenadeProjectile entity that
+/// existed in the demo. Used by consumers to attribute "smoke
+/// extinguished by molly" interactions via fire_count drops at the
+/// smoke's expire tick.
+#[derive(Debug, Clone)]
+pub struct SmokeRecord {
+    pub entity_id: i32,
+    pub thrower_entity_id: i32,        // CBaseGrenade.m_hThrower (handle); 0 if unresolved
+    pub detonate_tick: i32,             // CSmokeGrenadeProjectile.m_nSmokeEffectTickBegin
+    pub expire_tick: i32,               // tick at which entity-delete fired
+    pub detonate_pos: [f32; 3],         // CSmokeGrenadeProjectile.m_vSmokeDetonationPos
+    pub exploded_from_inferno: bool,    // CSmokeGrenadeProjectile.m_bExplodeFromInferno
+}
+
 /// Andrew's monotone-chain convex hull. O(n log n). Returns CCW vertices.
 /// For input with <3 unique points, returns the input directly (a 1- or 2-point
 /// "hull" is rendered as point/line by consumers).
@@ -427,6 +442,41 @@ impl<'a> SecondPassParser<'a> {
                 hull_xy,
             });
         }
+    }
+
+    /// Sprint 5 / Task 4 — called when a CSmokeGrenadeProjectile entity is
+    /// being deleted (smoke expired). Reads the smoke's lifecycle props
+    /// one final time (before the entity slot is cleared) and emits a
+    /// SmokeRecord. Bare prop names per the class-prefix-strip rule
+    /// (see probe_grenades.rs preamble).
+    pub fn finalize_smoke_record(&mut self, entity_id: i32, expire_tick: i32) {
+        let detonate_pos = match self.get_prop_from_ent_by_name(&entity_id, "m_vSmokeDetonationPos") {
+            Ok(Variant::VecXYZ(v)) => v,
+            _ => [0.0, 0.0, 0.0],
+        };
+        let detonate_tick = match self.get_prop_from_ent_by_name(&entity_id, "m_nSmokeEffectTickBegin") {
+            Ok(Variant::I32(t)) => t,
+            _ => 0,
+        };
+        let exploded_from_inferno = match self.get_prop_from_ent_by_name(&entity_id, "m_bExplodeFromInferno") {
+            Ok(Variant::Bool(b)) => b,
+            _ => false,
+        };
+        // m_hThrower is a CHandle (encoded as u32). Lower 11 bits = entity_id;
+        // remaining bits are serial number. Mask to recover the entity_id.
+        let thrower_entity_id = match self.get_prop_from_ent_by_name(&entity_id, "m_hThrower") {
+            Ok(Variant::U32(h)) => (h & 0x7FF) as i32,
+            _ => 0,
+        };
+
+        self.smoke_records.push(SmokeRecord {
+            entity_id,
+            thrower_entity_id,
+            detonate_tick,
+            expire_tick,
+            detonate_pos,
+            exploded_from_inferno,
+        });
     }
 
     /// Helper — look up a prop_id by name in `prop_infos` then read it
