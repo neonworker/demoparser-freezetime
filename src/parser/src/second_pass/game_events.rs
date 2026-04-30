@@ -183,6 +183,12 @@ impl<'a> SecondPassParser<'a> {
         }
         return None;
     }
+    /// Resolve a CS2 player_slot (0-9) to a steamid string. Slots are stored
+    /// as the low byte of `UserInfo.userid` in the stringtable, so we reuse
+    /// the same `& 0xFF` lookup as `find_user_by_userid`.
+    pub fn find_steamid_by_slot(&self, slot: i32) -> Option<String> {
+        self.find_user_by_userid(slot).map(|u| u.steamid.to_string())
+    }
     pub fn find_user_by_controller_id(&self, userid: i32) -> Option<&PlayerMetaData> {
         for (_, player) in &self.players {
             if player.controller_entid == Some(userid) {
@@ -1102,6 +1108,22 @@ impl<'a> SecondPassParser<'a> {
         fields.push(EventField {
             name: "victim_slot".to_string(),
             data: msg.victim_slot.map(Variant::I32),
+        });
+
+        fields.push(EventField {
+            name: "attacker_steamid".to_string(),
+            data: msg
+                .attacker_slot
+                .and_then(|slot| self.find_steamid_by_slot(slot))
+                .map(Variant::String),
+        });
+
+        fields.push(EventField {
+            name: "victim_steamid".to_string(),
+            data: msg
+                .victim_slot
+                .and_then(|slot| self.find_steamid_by_slot(slot))
+                .map(Variant::String),
         });
 
         fields.push(EventField {
