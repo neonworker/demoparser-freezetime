@@ -77,6 +77,23 @@ pub struct SmokeRecord {
     pub exploded_from_inferno: bool,    // CSmokeGrenadeProjectile.m_bExplodeFromInferno
 }
 
+/// Round-tagging branch — bomb-site resolution via the planted-bomb
+/// entity's own site index (Option B, AkiVer-style). One record per
+/// CPlantedC4 entity in the demo, capturing `m_nBombSite` once it has
+/// been populated on the entity (typically at the same tick as the
+/// `bomb_planted` GameEvent).
+///
+/// Mapping: 0 → A, 1 → B (per AkiVer's cs-demo-analyzer
+/// pkg/api/analyzer.go ~line 1217-1231). The wrapper does the letter
+/// translation; this struct carries the raw integer for empirical
+/// verification first.
+#[derive(Debug, Clone)]
+pub struct PlantedC4Record {
+    pub entity_id: i32,
+    pub plant_tick: i32,       // tick at which the prop first read non-default
+    pub bomb_site: i32,        // raw CPlantedC4.m_nBombSite value
+}
+
 pub enum CoordinateAxis {
     X,
     Y,
@@ -102,6 +119,11 @@ impl<'a> SecondPassParser<'a> {
             // Sprint 4 (loadouts) + Sprint 5 (grenades) need projectile data
             // AND df_per_player populated simultaneously.
         }
+        // Round-tagging branch — Option B bomb-site resolution. Run
+        // regardless of parse_projectiles since CPlantedC4 isn't a
+        // projectile (the diagnostic probe binary disables projectile
+        // collection to keep memory low on 500 MB demos).
+        self.collect_planted_c4_records();
         // iterate every player and every wanted prop name
         // if either one is missing then push None to output
         for (entity_id, player) in &self.players {
@@ -408,6 +430,49 @@ impl<'a> SecondPassParser<'a> {
                 tick: self.tick,
                 fire_count,
                 flame_xy: active_xy,
+            });
+        }
+    }
+
+    /// Round-tagging branch — Option B bomb-site resolution. For each
+    /// tracked CPlantedC4 entity that hasn't yet been recorded, read
+    /// `m_nBombSite` off the entity. Once the prop reads a valid value
+    /// (>= 0), emit one [`PlantedC4Record`] capturing the entity_id,
+    /// current tick (proxy for plant_tick), and raw site index.
+    ///
+    /// Why per-tick polling: `m_nBombSite` is set on the CPlantedC4
+    /// entity when CS2 plants the bomb — typically the same tick as
+    /// the `bomb_planted` GameEvent, but the prop might not be on the
+    /// entity at creation if the baseline carries a default. By
+    /// polling, we capture the first tick the value lands.
+    ///
+    /// One record per entity (subsequent ticks are no-ops once
+    /// `m_nBombSite` is read). The default-uninitialized value reads
+    /// as 0 for CS2 (i32 zero-init); we accept that and rely on the
+    /// wrapper to join against `bomb_planted_tick` from GameEvents.
+    /// The first valid read across all entities will overwhelmingly
+    /// land at the plant tick because that's when the entity is
+    /// created in the first place.
+    pub fn collect_planted_c4_records(&mut self) {
+        if self.planted_c4_entity_ids.is_empty() {
+            return;
+        }
+        // Snapshot to avoid mutable-borrow conflict with self.entities.
+        let entids: Vec<i32> = self.planted_c4_entity_ids.clone();
+        for entid in &entids {
+            // Skip if we've already recorded this entity.
+            if self.planted_c4_records.iter().any(|r| r.entity_id == *entid) {
+                continue;
+            }
+            let site = match self.get_prop_from_ent_by_name(entid, "m_nBombSite") {
+                Ok(Variant::I32(s)) => s,
+                Ok(Variant::U32(s)) => s as i32,
+                _ => continue, // prop not yet populated on this entity
+            };
+            self.planted_c4_records.push(PlantedC4Record {
+                entity_id: *entid,
+                plant_tick: self.tick,
+                bomb_site: site,
             });
         }
     }

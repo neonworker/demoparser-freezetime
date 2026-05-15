@@ -46,6 +46,10 @@ pub enum EntityType {
     C4,
     Inferno,
     SmokeProjectile,
+    /// Round-tagging branch — Option B bomb-site resolution.
+    /// CPlantedC4 = the planted bomb entity (distinct from CC4, the
+    /// bomb-in-player-hand). Carries `m_nBombSite` (0 = A, 1 = B).
+    PlantedC4,
 }
 enum EntityCmd {
     Delete,
@@ -94,6 +98,10 @@ impl<'a> SecondPassParser<'a> {
                     // empty InfernoRecord rows (88% noise) and pointless smoke iteration.
                     self.inferno_entity_ids.retain(|&id| id != entity_id);
                     self.smoke_entity_ids.retain(|&id| id != entity_id);
+                    // Round-tagging branch: same hygiene for planted-C4 entity
+                    // tracking. The PlantedC4Record has already been emitted on
+                    // any earlier tick where the prop populated.
+                    self.planted_c4_entity_ids.retain(|&id| id != entity_id);
                     if let Some(entry) = self.entities.get_mut(entity_id as usize) {
                         *entry = None;
                     }
@@ -347,6 +355,7 @@ impl<'a> SecondPassParser<'a> {
             }
             EntityType::Rules => self.rules_entity_id = Some(*entity_id),
             EntityType::C4 => self.c4_entity_id = Some(*entity_id),
+            EntityType::PlantedC4 => self.planted_c4_entity_ids.push(*entity_id),    // Round-tagging branch
             EntityType::Inferno => self.inferno_entity_ids.push(*entity_id),         // Sprint 5
             EntityType::SmokeProjectile => {                                         // Sprint 5
                 // Track smoke entids in their own list AND register in
@@ -396,6 +405,7 @@ impl<'a> SecondPassParser<'a> {
             "CCSGameRulesProxy" => return Ok(EntityType::Rules),
             "CCSTeam" => return Ok(EntityType::Team),
             "CC4" => return Ok(EntityType::C4),
+            "CPlantedC4" => return Ok(EntityType::PlantedC4),              // Round-tagging branch (Option B)
             "CInferno" => return Ok(EntityType::Inferno),                  // Sprint 5
             "CSmokeGrenadeProjectile" => return Ok(EntityType::SmokeProjectile),  // Sprint 5
             _ => {}
@@ -417,6 +427,7 @@ fn should_emit_prop_to_listen(prop_name: &str) -> bool {
         Some("CCSPlayerController") => return true,
         Some("CInferno") => return true,                      // Sprint 5
         Some("CSmokeGrenadeProjectile") => return true,       // Sprint 5
+        Some("CPlantedC4") => return true,                    // Round-tagging branch (Option B)
         _ => {}
     };
     if is_weapon_prop(prop_name) || is_grenade_prop(prop_name) {

@@ -5,7 +5,7 @@ use crate::first_pass::read_bits::DemoParserError;
 use crate::first_pass::sendtables::Serializer;
 use crate::first_pass::stringtables::StringTable;
 use crate::first_pass::stringtables::UserInfo;
-use crate::second_pass::collect_data::{InfernoRecord, ProjectileRecord, SmokeRecord};
+use crate::second_pass::collect_data::{InfernoRecord, PlantedC4Record, ProjectileRecord, SmokeRecord};
 use crate::second_pass::decoder::QfMapper;
 use crate::second_pass::entities::Entity;
 use crate::second_pass::entities::PlayerMetaData;
@@ -55,6 +55,7 @@ pub struct SecondPassParser<'a> {
     pub projectiles: BTreeSet<i32>,
     pub inferno_entity_ids: Vec<i32>,         // Sprint 5
     pub smoke_entity_ids: Vec<i32>,           // Sprint 5
+    pub planted_c4_entity_ids: Vec<i32>,      // Round-tagging branch (Option B)
     pub fullpackets_parsed: u32,
     pub wanted_players: AHashSet<u64>,
     pub wanted_ticks: AHashSet<i32>,
@@ -62,6 +63,7 @@ pub struct SecondPassParser<'a> {
     pub projectile_records: Vec<ProjectileRecord>,
     pub inferno_records: Vec<InfernoRecord>,         // Sprint 5
     pub smoke_records: Vec<SmokeRecord>,             // Sprint 5 / Task 4
+    pub planted_c4_records: Vec<PlantedC4Record>,    // Round-tagging branch (Option B)
     pub voice_data: Vec<(i32, CsvcMsgVoiceData)>,
     pub output: AHashMap<u32, PropColumn, RandomState>,
     pub header: HashMap<String, String>,
@@ -150,6 +152,7 @@ impl<'a> SecondPassParser<'a> {
             projectiles: self.projectile_records,
             inferno_records: self.inferno_records,
             smoke_records: self.smoke_records,
+            planted_c4_records: self.planted_c4_records,
             ptr: self.ptr,
             df_per_player: self.df_per_player,
             entities: self.entities,
@@ -193,6 +196,7 @@ impl<'a> SecondPassParser<'a> {
             projectile_records: vec![],
             inferno_records: vec![],
             smoke_records: vec![],
+            planted_c4_records: vec![],
             parse_all_packets: parse_all_packets,
             wanted_players: first_pass_output.wanted_players.clone(),
             wanted_ticks: first_pass_output.wanted_ticks.clone(),
@@ -214,6 +218,7 @@ impl<'a> SecondPassParser<'a> {
             projectiles: BTreeSet::default(),
             inferno_entity_ids: Vec::new(),
             smoke_entity_ids: Vec::new(),
+            planted_c4_entity_ids: Vec::new(),
             baselines: first_pass_output.baselines.clone(),
             string_tables: first_pass_output.string_tables.clone(),
             teams: Teams::new(),
