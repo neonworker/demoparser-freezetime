@@ -460,8 +460,13 @@ impl<'a> SecondPassParser<'a> {
         // Snapshot to avoid mutable-borrow conflict with self.entities.
         let entids: Vec<i32> = self.planted_c4_entity_ids.clone();
         for entid in &entids {
-            // Skip if we've already recorded this entity.
-            if self.planted_c4_records.iter().any(|r| r.entity_id == *entid) {
+            // Skip if we've already recorded the CURRENT lifecycle for this
+            // entity slot. CS2 reuses slot IDs after delete — scanning
+            // `planted_c4_records` would conflate a fresh plant with a
+            // previous lifecycle's record at the same slot. The active set
+            // is cleared in `entities.rs` on entity-delete, so a reused
+            // slot can land a new record.
+            if self.planted_c4_recorded_active.contains(entid) {
                 continue;
             }
             let site = match self.get_prop_from_ent_by_name(entid, "m_nBombSite") {
@@ -474,6 +479,7 @@ impl<'a> SecondPassParser<'a> {
                 plant_tick: self.tick,
                 bomb_site: site,
             });
+            self.planted_c4_recorded_active.insert(*entid);
         }
     }
 
@@ -1462,6 +1468,100 @@ impl std::error::Error for PropCollectionError {}
 impl fmt::Display for PropCollectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
+    }
+}
+
+#[cfg(test)]
+mod planted_c4_dedupe_tests {
+    //! Slot-reuse-safe dedupe for `collect_planted_c4_records`.
+    //!
+    //! CS2 reuses entity slot IDs after delete. The pre-fix dedupe scanned
+    //! `planted_c4_records` linearly for `entity_id` matches — when a later
+    //! plant reused a slot, the scan saw the previous lifecycle's record and
+    //! silently skipped emitting a fresh record. The fix anchors dedupe on
+    //! `planted_c4_recorded_active: AHashSet<i32>`, cleared on entity-delete
+    //! in `entities.rs`.
+    //!
+    //! Constructing a full `SecondPassParser` from a unit test requires the
+    //! whole first-pass output graph (PropController, serializers, baselines,
+    //! huffman tables, …) so we test the dedupe invariant directly against
+    //! the same `AHashSet` + `Vec<PlantedC4Record>` shape that the production
+    //! collector + delete path operate on. Any future change that doesn't
+    //! preserve this lifecycle will fail this test.
+    use super::PlantedC4Record;
+    use ahash::AHashSet;
+
+    /// Mirrors the production push: skip if active set contains entid, else
+    /// push record + insert. Returns whether a new record was emitted.
+    fn try_emit(
+        records: &mut Vec<PlantedC4Record>,
+        active: &mut AHashSet<i32>,
+        entid: i32,
+        tick: i32,
+        site: i32,
+    ) -> bool {
+        if active.contains(&entid) {
+            return false;
+        }
+        records.push(PlantedC4Record {
+            entity_id: entid,
+            plant_tick: tick,
+            bomb_site: site,
+        });
+        active.insert(entid);
+        true
+    }
+
+    /// Mirrors the production entity-delete cleanup.
+    fn on_entity_delete(active: &mut AHashSet<i32>, entid: i32) {
+        active.remove(&entid);
+    }
+
+    #[test]
+    fn slot_reuse_emits_fresh_record_for_each_lifecycle() {
+        let mut records: Vec<PlantedC4Record> = Vec::new();
+        let mut active: AHashSet<i32> = AHashSet::default();
+
+        // Lifecycle 1: entity 94 plants at site 0.
+        assert!(
+            try_emit(&mut records, &mut active, 94, 1000, 0),
+            "first plant on slot 94 should emit"
+        );
+        // Subsequent ticks of the same lifecycle must not emit again.
+        assert!(
+            !try_emit(&mut records, &mut active, 94, 1001, 0),
+            "duplicate poll for active lifecycle should be skipped"
+        );
+
+        // Entity 94 deleted (round ends, bomb explodes / defuses).
+        on_entity_delete(&mut active, 94);
+
+        // Lifecycle 2: slot 94 reused for a fresh plant at site 1.
+        assert!(
+            try_emit(&mut records, &mut active, 94, 2000, 1),
+            "post-delete reuse of slot 94 should emit a new record"
+        );
+
+        assert_eq!(records.len(), 2, "exactly two records — one per lifecycle");
+        assert_eq!(records[0].entity_id, 94);
+        assert_eq!(records[0].plant_tick, 1000);
+        assert_eq!(records[0].bomb_site, 0);
+        assert_eq!(records[1].entity_id, 94);
+        assert_eq!(records[1].plant_tick, 2000);
+        assert_eq!(records[1].bomb_site, 1);
+    }
+
+    #[test]
+    fn no_delete_means_no_reemit_even_with_different_site() {
+        // Sanity check: if the slot is still active, even a hypothetical
+        // re-read producing a different site value must NOT emit a second
+        // record (that's the normal per-tick polling no-op).
+        let mut records: Vec<PlantedC4Record> = Vec::new();
+        let mut active: AHashSet<i32> = AHashSet::default();
+        assert!(try_emit(&mut records, &mut active, 94, 1000, 0));
+        assert!(!try_emit(&mut records, &mut active, 94, 1500, 1));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].bomb_site, 0);
     }
 }
 

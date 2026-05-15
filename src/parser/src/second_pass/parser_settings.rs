@@ -56,6 +56,12 @@ pub struct SecondPassParser<'a> {
     pub inferno_entity_ids: Vec<i32>,         // Sprint 5
     pub smoke_entity_ids: Vec<i32>,           // Sprint 5
     pub planted_c4_entity_ids: Vec<i32>,      // Round-tagging branch (Option B)
+    /// Slot-reuse-safe dedupe for [`SecondPassParser::collect_planted_c4_records`].
+    /// CS2 reuses entity slot IDs after delete — a linear scan over
+    /// `planted_c4_records` would silently skip a fresh CPlantedC4 plant
+    /// whose slot ID was used by a previous lifecycle's record. Cleared
+    /// on entity-delete (see `entities.rs`).
+    pub planted_c4_recorded_active: AHashSet<i32>,
     pub fullpackets_parsed: u32,
     pub wanted_players: AHashSet<u64>,
     pub wanted_ticks: AHashSet<i32>,
@@ -219,6 +225,7 @@ impl<'a> SecondPassParser<'a> {
             inferno_entity_ids: Vec::new(),
             smoke_entity_ids: Vec::new(),
             planted_c4_entity_ids: Vec::new(),
+            planted_c4_recorded_active: AHashSet::default(),
             baselines: first_pass_output.baselines.clone(),
             string_tables: first_pass_output.string_tables.clone(),
             teams: Teams::new(),

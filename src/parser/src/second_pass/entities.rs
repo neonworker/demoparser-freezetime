@@ -100,8 +100,13 @@ impl<'a> SecondPassParser<'a> {
                     self.smoke_entity_ids.retain(|&id| id != entity_id);
                     // Round-tagging branch: same hygiene for planted-C4 entity
                     // tracking. The PlantedC4Record has already been emitted on
-                    // any earlier tick where the prop populated.
+                    // any earlier tick where the prop populated. Drop the
+                    // dedupe-active marker too — CS2 reuses entity slot IDs
+                    // after delete, so the NEXT plant landing on this slot
+                    // must produce a fresh record (see
+                    // `collect_planted_c4_records`).
                     self.planted_c4_entity_ids.retain(|&id| id != entity_id);
+                    self.planted_c4_recorded_active.remove(&entity_id);
                     if let Some(entry) = self.entities.get_mut(entity_id as usize) {
                         *entry = None;
                     }
