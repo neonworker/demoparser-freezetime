@@ -76,11 +76,13 @@ pub struct SmokeRecord {
     pub detonate_pos: [f32; 3],         // CSmokeGrenadeProjectile.m_vSmokeDetonationPos
     pub exploded_from_inferno: bool,    // CSmokeGrenadeProjectile.m_bExplodeFromInferno
     /// Reassembled voxel journal blob (CSmokeGrenadeProjectile.m_VoxelFrameData).
-    /// Flattened from per-element props at entity-delete time. Empty if the
-    /// prop was never populated (e.g. smoke that never fully detonated).
+    /// Flattened from per-element props at entity-delete time. NOT guaranteed
+    /// empty on failure: if neither element-index base reassembled into a valid
+    /// journal this holds the best-effort base=1 buffer, which is a full-length,
+    /// mostly-zero, structurally-INVALID blob. Consumers MUST validate (e.g.
+    /// via journal tiling) before trusting it.
     pub voxel_frame_data: Vec<u8>,
-    /// CSmokeGrenadeProjectile.m_nVoxelFrameDataSize — the authoritative byte
-    /// count; use this as the length when reading voxel_frame_data.
+    /// Authoritative net-sent journal byte count (m_nVoxelFrameDataSize).
     pub voxel_frame_data_size: i32,
 }
 
@@ -717,27 +719,26 @@ impl<'a> SecondPassParser<'a> {
         // delta-encoder sends element-0 as the "length" element when the
         // vector first grows, so bytes may start at base=1 (length prefix
         // occupies slot 0) or at base=0 (no prefix). We try base=1 first
-        // because that matches the observed inferno fire-positions layout;
-        // fall back to base=0 if the first attempt does not tile cleanly.
-        let mut voxel_frame_data: Vec<u8> = Vec::new();
-        for base in [1u32, 0u32] {
-            let mut buf = Vec::with_capacity(n);
-            for i in 0..n as u32 {
-                let pid = SMOKE_VOXEL_DATA_OFFSET + base + i;
-                let byte = match self.get_prop_from_ent(&pid, &entity_id) {
+        // because that matches the observed inferno fire-positions layout,
+        // then base=0; the first buffer that journal_tiles wins.
+        let read_base = |base: u32| -> Vec<u8> {
+            (0..n as u32)
+                .map(|i| match self.get_prop_from_ent(&(SMOKE_VOXEL_DATA_OFFSET + base + i), &entity_id) {
                     Ok(Variant::U32(b)) => b as u8,
                     _ => 0u8,
-                };
-                buf.push(byte);
-            }
-            if journal_tiles(&buf) {
-                voxel_frame_data = buf;
-                break;
-            }
-            if voxel_frame_data.is_empty() {
-                voxel_frame_data = buf;
-            }
-        }
+                })
+                .collect()
+        };
+        // If neither base reassembles into a valid journal we keep the
+        // best-effort base=1 buffer — a full-length, mostly-zero,
+        // structurally-INVALID blob, NOT empty. Downstream TS analysis
+        // re-validates journal structure, so we deliberately surface
+        // non-tiling smokes rather than dropping them.
+        let voxel_frame_data: Vec<u8> = [1u32, 0u32]
+            .into_iter()
+            .map(read_base)
+            .find_map(|buf| journal_tiles(&buf).then_some(buf))
+            .unwrap_or_else(|| read_base(1));
         self.smoke_records.push(SmokeRecord {
             entity_id,
             thrower_entity_id,
@@ -1803,7 +1804,7 @@ mod planted_c4_dedupe_tests {
 ///
 /// This validates that the per-element prop reassembly produced a
 /// well-formed voxel journal blob. An empty slice returns `false`.
-pub fn journal_tiles(blob: &[u8]) -> bool {
+pub(crate) fn journal_tiles(blob: &[u8]) -> bool {
     if blob.len() < 4 {
         return false;
     }
@@ -1867,6 +1868,22 @@ mod journal_tiles_tests {
             0x01, 0x00, 0x01, 0x00, 0x03,       // record 1
         ];
         assert!(journal_tiles(&blob));
+    }
+
+    /// A single header-only record (seq=0, len=0, no payload) is valid.
+    #[test]
+    fn only_header_zero_len_record_tiles() {
+        // seq=0 (2 bytes LE) | len=0 (2 bytes LE), no payload — 4 bytes total
+        let blob: Vec<u8> = vec![0x00, 0x00, 0x00, 0x00];
+        assert!(journal_tiles(&blob));
+    }
+
+    /// A valid record followed by one stray trailing byte does not tile.
+    #[test]
+    fn trailing_garbage_byte_does_not_tile() {
+        // seq=0 | len=2 | [0x01, 0x02] then a stray 0xFF (off != blob.len())
+        let blob: Vec<u8> = vec![0x00, 0x00, 0x02, 0x00, 0x01, 0x02, 0xFF];
+        assert!(!journal_tiles(&blob));
     }
 }
 
