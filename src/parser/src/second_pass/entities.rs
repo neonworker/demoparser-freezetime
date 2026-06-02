@@ -423,13 +423,15 @@ impl<'a> SecondPassParser<'a> {
             "CSmokeGrenadeProjectile" => return Ok(EntityType::SmokeProjectile),  // Sprint 5
             _ => {}
         }
-        // Slice 4 — droppable item entities (guns + Zeus + C4 + held
-        // grenades). Exclude knives and in-flight projectiles. C4 is already
-        // matched above as EntityType::C4 — also track it as an Item.
+        // Slice 4 — droppable item entities (guns + Zeus + held grenades).
+        // Exclude knives and in-flight projectiles. C4 is matched above as
+        // EntityType::C4 (CF-1: the dead `n == "CC4"` clause is dropped — CC4
+        // never reaches here) and is dual-tracked as an Item in the C4
+        // create-arm.
         let n = class.name.as_str();
         let is_item = !n.contains("Projectile")
             && !n.contains("Knife")
-            && (n.starts_with("CWeapon") || n == "CAK47" || n == "CDeagle" || n == "CC4"
+            && (n.starts_with("CWeapon") || n == "CAK47" || n == "CDeagle"
                 || (n.contains("Grenade") && !n.contains("Player")));
         if is_item {
             return Ok(EntityType::Item);

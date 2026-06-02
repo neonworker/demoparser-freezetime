@@ -144,9 +144,51 @@ impl<'a> SecondPassParser<'a> {
         // collection to keep memory low on 500 MB demos).
         self.collect_planted_c4_records();
         self.collect_item_registry_records();
+        // Slice 4 — wear/seed for an item entity is only readable while it is
+        // a player's ACTIVE weapon (find_skin_float/seed resolve the active
+        // weapon). Capture once per entity into a local buffer during the
+        // per-player loop, then fold into item_skin_cache after the loop (the
+        // loop holds &self.players, so the mutable cache insert is deferred).
+        let mut skin_captures: Vec<(i32, (u32, String, f32, u32))> = Vec::new();
         // iterate every player and every wanted prop name
         // if either one is missing then push None to output
         for (entity_id, player) in &self.players {
+            // Slice 4 — capture the active weapon's skin/wear/seed once.
+            if let Some(aw) = self.prop_controller.special_ids.active_weapon {
+                if let Ok(Variant::U32(h)) = self.get_prop_from_ent(&aw, entity_id) {
+                    let went = (h & 0x7FF) as i32;
+                    // Guard slot reuse (see collect_item_registry_records): only
+                    // cache wear/seed when the active-weapon slot currently holds
+                    // a tracked item entity (not a knife whose slot is stale).
+                    let is_item_slot = matches!(
+                        self.entities.get(went as usize),
+                        Some(Some(e)) if matches!(e.entity_type, EntityType::Item | EntityType::C4)
+                    );
+                    if is_item_slot
+                        && self.item_entity_ids.contains(&went)
+                        && !self.item_skin_cache.contains_key(&went)
+                    {
+                        let wear = match self.find_skin_float(player) {
+                            Ok(Variant::F32(f)) => f,
+                            _ => 0.0,
+                        };
+                        let seed = match self.find_skin_paint_seed(player) {
+                            Ok(Variant::U32(s)) => s,
+                            Ok(Variant::F32(s)) => s as u32,
+                            _ => 0,
+                        };
+                        let id = match self.find_weapon_skin_id(&went) {
+                            Ok(Variant::U32(v)) => v,
+                            _ => 0,
+                        };
+                        let name = match self.find_weapon_skin(&went) {
+                            Ok(Variant::String(s)) => s,
+                            _ => String::new(),
+                        };
+                        skin_captures.push((went, (id, name, wear, seed)));
+                    }
+                }
+            }
             // iterate every wanted prop state
             // if any prop's state for this tick is not the wanted state, dont extract info from tick
             for wanted_prop_state_info in &self.prop_controller.wanted_prop_state_infos {
@@ -194,6 +236,11 @@ impl<'a> SecondPassParser<'a> {
                     }
                 }
             }
+        }
+        // Slice 4 — fold the per-player active-weapon skin/wear/seed captures
+        // into the cache (deferred out of the &self.players loop above).
+        for (went, skin) in skin_captures {
+            self.item_skin_cache.entry(went).or_insert(skin);
         }
     }
 
@@ -505,12 +552,122 @@ impl<'a> SecondPassParser<'a> {
 
     /// Slice 4 — per-round item registry. ON-CHANGE emission (push a record
     /// only when a tracked item entity's owner changes vs its last seen
-    /// owner, plus the first observation). Body lands in Task 4.
+    /// owner, plus the first observation), resolving m_hOwnerEntity → pawn →
+    /// steamid (0xFFFFFF = dropped + a real position), def_index → name,
+    /// m_iItemID, clip, cell position, and the out-of-box skin id/name.
+    /// Wear/seed come from item_skin_cache (captured in the per-player loop).
     pub fn collect_item_registry_records(&mut self) {
         if self.item_entity_ids.is_empty() {
             return;
         }
-        // Task 4: per-entity read + on-change diff + skin/owner resolution.
+        // Snapshot to avoid mutable-borrow conflict with self.entities.
+        let entids: Vec<i32> = self.item_entity_ids.clone();
+        let tick = self.tick;
+        for entid in &entids {
+            // CS2 reuses entity slots: a slot tracked while it held a gun can
+            // later hold a CKnife / Normal entity (create-without-delete
+            // overwrite, before any delete clears item_entity_ids). Re-validate
+            // the CURRENT entity at this slot is still a tracked item type;
+            // otherwise we'd emit knife/stale records (knives are out of scope).
+            match self.entities.get(*entid as usize) {
+                Some(Some(e)) if matches!(e.entity_type, EntityType::Item | EntityType::C4) => {}
+                _ => continue,
+            }
+            // def_index identifies the item; absent → entity not ready, skip.
+            let def_index = match self.get_prop_from_ent_by_name(entid, "m_iItemDefinitionIndex") {
+                Ok(Variant::U32(d)) => d,
+                Ok(Variant::I32(d)) => d as u32,
+                _ => continue,
+            };
+            // owner handle → pawn idx → steamid; 0xFFFFFF (or unresolved) = dropped.
+            let owner_handle = match self.get_prop_from_ent_by_name(entid, "m_hOwnerEntity") {
+                Ok(Variant::U32(h)) => h,
+                Ok(Variant::I32(h)) => h as u32,
+                _ => 0x7FFFFFFF,
+            };
+            let owner_pawn_idx = (owner_handle & 0x7FF) as i32;
+            let (owner_steamid, on_ground) = match self.players.get(&owner_pawn_idx) {
+                Some(p) if owner_handle != 0xFFFFFF => (p.steamid, false),
+                _ => (None, true),
+            };
+            let prev = self.item_prev_owner.get(entid).copied();
+            let changed = prev != Some(owner_pawn_idx);
+            if !changed {
+                continue;
+            }
+            self.item_prev_owner.insert(*entid, owner_pawn_idx);
+            // Read the rest only on a change (bounded work).
+            let clip = match self.get_prop_from_ent_by_name(entid, "m_iClip1") {
+                Ok(Variant::I32(c)) => c,
+                Ok(Variant::U32(c)) => c as i32,
+                _ => -1,
+            };
+            let x = self.item_coord(entid, CoordinateAxis::X);
+            let y = self.item_coord(entid, CoordinateAxis::Y);
+            let z = self.item_coord(entid, CoordinateAxis::Z);
+            let item_id = self.read_item_id(entid);
+            let (skin_id, skin_name, wear, seed) = self
+                .item_skin_cache
+                .get(entid)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let id = match self.find_weapon_skin_id(entid) {
+                        Ok(Variant::U32(v)) => v,
+                        _ => 0,
+                    };
+                    let name = match self.find_weapon_skin(entid) {
+                        Ok(Variant::String(s)) => s,
+                        _ => String::new(),
+                    };
+                    (id, name, 0.0, 0)
+                });
+            let item_name = WEAPINDICIES
+                .get(&def_index)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            self.item_registry_records.push(ItemRegistryRecord {
+                entity_id: *entid,
+                tick,
+                def_index,
+                item_name,
+                item_id,
+                owner_steamid,
+                on_ground,
+                x,
+                y,
+                z,
+                clip,
+                skin_id,
+                skin_name,
+                wear,
+                seed,
+            });
+        }
+    }
+
+    /// Slice 4 helper — cell+offset position of an item entity on one axis.
+    /// Weapons share CBodyComponentBaseAnimGraph, so the grenade cell reader
+    /// works on them. Returns 0.0 on a missing/unready prop.
+    fn item_coord(&self, entid: &i32, axis: CoordinateAxis) -> f32 {
+        match self.collect_cell_coordinate_grenade(axis, entid) {
+            Ok(Variant::F32(v)) => v,
+            _ => 0.0,
+        }
+    }
+
+    /// Slice 4 helper — combine m_iItemIDLow | (m_iItemIDHigh << 32).
+    fn read_item_id(&self, entid: &i32) -> u64 {
+        let low = match self.get_prop_from_ent_by_name(entid, "m_iItemIDLow") {
+            Ok(Variant::U32(v)) => v as u64,
+            Ok(Variant::I32(v)) => v as u32 as u64,
+            _ => 0,
+        };
+        let high = match self.get_prop_from_ent_by_name(entid, "m_iItemIDHigh") {
+            Ok(Variant::U32(v)) => v as u64,
+            Ok(Variant::I32(v)) => v as u32 as u64,
+            _ => 0,
+        };
+        low | (high << 32)
     }
 
     /// Sprint 5 / Task 4 — called when a CSmokeGrenadeProjectile entity is
