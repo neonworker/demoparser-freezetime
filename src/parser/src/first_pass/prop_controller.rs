@@ -102,6 +102,12 @@ pub const INVENTORY_AS_IDS_BITMASK: u32 = 100100026;
 // each with a wide gap to neighbouring constants.
 pub const INFERNO_FIRE_POSITIONS_OFFSET: u32 = 600000;
 pub const INFERNO_FIRE_IS_BURNING_OFFSET: u32 = 700000;
+/// Per-element offset for `CSmokeGrenadeProjectile.m_VoxelFrameData` (a
+/// dynamic `CNetworkUtlVectorBase<uint8>`). Each byte element gets its own
+/// prop_id `SMOKE_VOXEL_DATA_OFFSET + element_index` so they don't
+/// overwrite each other in `entity.props`. Wide gap (100 k) to the next
+/// constant — sized to fit up to ~3072 bytes per frame.
+pub const SMOKE_VOXEL_DATA_OFFSET: u32 = 800000;
 
 #[derive(Clone, Debug)]
 pub struct PropController {
@@ -507,6 +513,9 @@ impl PropController {
         }
         if full_name == "CInferno.m_bFireIsBurning" {
             f.prop_id = INFERNO_FIRE_IS_BURNING_OFFSET;
+        }
+        if full_name == "CSmokeGrenadeProjectile.m_VoxelFrameData" {
+            f.prop_id = SMOKE_VOXEL_DATA_OFFSET;
         }
         self.id += 1;
     }

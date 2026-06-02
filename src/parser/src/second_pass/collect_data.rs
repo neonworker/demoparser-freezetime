@@ -75,6 +75,13 @@ pub struct SmokeRecord {
     pub expire_tick: i32,               // tick at which entity-delete fired
     pub detonate_pos: [f32; 3],         // CSmokeGrenadeProjectile.m_vSmokeDetonationPos
     pub exploded_from_inferno: bool,    // CSmokeGrenadeProjectile.m_bExplodeFromInferno
+    /// Reassembled voxel journal blob (CSmokeGrenadeProjectile.m_VoxelFrameData).
+    /// Flattened from per-element props at entity-delete time. Empty if the
+    /// prop was never populated (e.g. smoke that never fully detonated).
+    pub voxel_frame_data: Vec<u8>,
+    /// CSmokeGrenadeProjectile.m_nVoxelFrameDataSize — the authoritative byte
+    /// count; use this as the length when reading voxel_frame_data.
+    pub voxel_frame_data_size: i32,
 }
 
 /// Round-tagging branch — bomb-site resolution via the planted-bomb
@@ -695,6 +702,42 @@ impl<'a> SecondPassParser<'a> {
             _ => 0,
         };
 
+        // Reassemble the voxel journal blob from per-element props.
+        // Each byte of m_VoxelFrameData was stored under a unique prop_id
+        // SMOKE_VOXEL_DATA_OFFSET + element_index (see prop_controller /
+        // sendtables fan-out). m_nVoxelFrameDataSize is the authoritative
+        // element count.
+        let voxel_frame_data_size = match self.get_prop_from_ent_by_name(&entity_id, "m_nVoxelFrameDataSize") {
+            Ok(Variant::I32(n)) => n,
+            Ok(Variant::U32(n)) => n as i32,
+            _ => 0,
+        };
+        let n = voxel_frame_data_size.max(0) as usize;
+        // Try both element-index bases. For a CNetworkUtlVectorBase the
+        // delta-encoder sends element-0 as the "length" element when the
+        // vector first grows, so bytes may start at base=1 (length prefix
+        // occupies slot 0) or at base=0 (no prefix). We try base=1 first
+        // because that matches the observed inferno fire-positions layout;
+        // fall back to base=0 if the first attempt does not tile cleanly.
+        let mut voxel_frame_data: Vec<u8> = Vec::new();
+        for base in [1u32, 0u32] {
+            let mut buf = Vec::with_capacity(n);
+            for i in 0..n as u32 {
+                let pid = SMOKE_VOXEL_DATA_OFFSET + base + i;
+                let byte = match self.get_prop_from_ent(&pid, &entity_id) {
+                    Ok(Variant::U32(b)) => b as u8,
+                    _ => 0u8,
+                };
+                buf.push(byte);
+            }
+            if journal_tiles(&buf) {
+                voxel_frame_data = buf;
+                break;
+            }
+            if voxel_frame_data.is_empty() {
+                voxel_frame_data = buf;
+            }
+        }
         self.smoke_records.push(SmokeRecord {
             entity_id,
             thrower_entity_id,
@@ -702,6 +745,8 @@ impl<'a> SecondPassParser<'a> {
             expire_tick,
             detonate_pos,
             exploded_from_inferno,
+            voxel_frame_data,
+            voxel_frame_data_size,
         });
     }
 
@@ -1749,6 +1794,79 @@ mod planted_c4_dedupe_tests {
         assert!(!try_emit(&mut records, &mut active, 94, 1500, 1));
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].bomb_site, 0);
+    }
+}
+
+/// Returns `true` if `blob` is exactly tiled by
+/// `u16-LE seq | u16-LE len | len bytes` records AND the first record's
+/// sequence number == 0.
+///
+/// This validates that the per-element prop reassembly produced a
+/// well-formed voxel journal blob. An empty slice returns `false`.
+pub fn journal_tiles(blob: &[u8]) -> bool {
+    if blob.len() < 4 {
+        return false;
+    }
+    let mut off = 0usize;
+    let mut first = true;
+    while off + 4 <= blob.len() {
+        let seq = u16::from_le_bytes([blob[off], blob[off + 1]]);
+        let len = u16::from_le_bytes([blob[off + 2], blob[off + 3]]) as usize;
+        if first {
+            if seq != 0 {
+                return false;
+            }
+            first = false;
+        }
+        off += 4 + len;
+    }
+    off == blob.len()
+}
+
+#[cfg(test)]
+mod journal_tiles_tests {
+    use super::journal_tiles;
+
+    /// A single seq=0 record with 3 payload bytes tiles perfectly.
+    #[test]
+    fn single_seq0_record_tiles() {
+        // seq=0 (2 bytes LE) | len=3 (2 bytes LE) | 3 payload bytes
+        let blob: Vec<u8> = vec![0x00, 0x00, 0x03, 0x00, 0xAA, 0xBB, 0xCC];
+        assert!(journal_tiles(&blob));
+    }
+
+    /// First record with seq != 0 must return false.
+    #[test]
+    fn nonzero_first_seq_fails() {
+        // seq=1 (2 bytes LE) | len=2 | 2 payload bytes
+        let blob: Vec<u8> = vec![0x01, 0x00, 0x02, 0x00, 0x11, 0x22];
+        assert!(!journal_tiles(&blob));
+    }
+
+    /// A blob where the declared length overruns the buffer must return false.
+    #[test]
+    fn length_overrun_fails() {
+        // seq=0 | len=100 | only 2 payload bytes
+        let blob: Vec<u8> = vec![0x00, 0x00, 0x64, 0x00, 0xDE, 0xAD];
+        assert!(!journal_tiles(&blob));
+    }
+
+    /// An empty blob returns false.
+    #[test]
+    fn empty_blob_fails() {
+        assert!(!journal_tiles(&[]));
+    }
+
+    /// Two valid consecutive records tile correctly.
+    #[test]
+    fn two_records_tile() {
+        // record 0: seq=0, len=2, [0x01, 0x02]
+        // record 1: seq=1, len=1, [0x03]
+        let blob: Vec<u8> = vec![
+            0x00, 0x00, 0x02, 0x00, 0x01, 0x02, // record 0
+            0x01, 0x00, 0x01, 0x00, 0x03,       // record 1
+        ];
+        assert!(journal_tiles(&blob));
     }
 }
 
