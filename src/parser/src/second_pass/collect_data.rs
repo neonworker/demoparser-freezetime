@@ -48,6 +48,7 @@ pub struct ProjectileRecord {
     pub grenade_type: Option<String>,
     pub entity_id: Option<i32>,
     pub bounces: Option<i32>,    // Sprint 5: m_nBounces snapshot at this tick
+    pub voxel_frame_data_size: Option<u32>,  // CSmokeGrenadeProjectile.m_nVoxelFrameDataSize at this tick (None for non-smokes)
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +404,13 @@ impl<'a> SecondPassParser<'a> {
                 Ok(Variant::I32(n)) => Some(n),
                 _ => None,
             };
+            // Smoke voxel spike: per-tick running journal byte count so an
+            // offline script can anchor voxel-journal frames to game ticks.
+            let voxel_frame_data_size = match self.get_prop_from_ent_by_name(projectile_entid, "m_nVoxelFrameDataSize") {
+                Ok(Variant::U32(n)) => Some(n),
+                Ok(Variant::I32(n)) if n >= 0 => Some(n as u32),
+                _ => None,
+            };
             self.projectile_records.push(ProjectileRecord {
                 steamid: Some(steamid),
                 name: Some(name.clone()),
@@ -413,6 +421,7 @@ impl<'a> SecondPassParser<'a> {
                 grenade_type: Some(grenade_type.clone()),
                 entity_id: Some(*projectile_entid),
                 bounces,
+                voxel_frame_data_size,
             });
 
             // Insert these always
