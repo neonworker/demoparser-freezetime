@@ -94,6 +94,25 @@ pub struct PlantedC4Record {
     pub bomb_site: i32,        // raw CPlantedC4.m_nBombSite value
 }
 
+#[derive(Debug, Clone)]
+pub struct ItemRegistryRecord {
+    pub entity_id: i32,
+    pub tick: i32,
+    pub def_index: u32,
+    pub item_name: String,        // WEAPINDICIES friendly name ("" if unknown)
+    pub item_id: u64,             // m_iItemIDLow | (m_iItemIDHigh << 32)
+    pub owner_steamid: Option<u64>, // resolved m_hOwnerEntity → pawn → steamid; None if dropped/unresolved
+    pub on_ground: bool,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub clip: i32,                // m_iClip1; -1 if unread
+    pub skin_id: u32,             // 0 = vanilla
+    pub skin_name: String,        // "" if vanilla
+    pub wear: f32,                // captured when active; 0 if never-active
+    pub seed: u32,
+}
+
 pub enum CoordinateAxis {
     X,
     Y,
@@ -124,6 +143,7 @@ impl<'a> SecondPassParser<'a> {
         // projectile (the diagnostic probe binary disables projectile
         // collection to keep memory low on 500 MB demos).
         self.collect_planted_c4_records();
+        self.collect_item_registry_records();
         // iterate every player and every wanted prop name
         // if either one is missing then push None to output
         for (entity_id, player) in &self.players {
@@ -481,6 +501,16 @@ impl<'a> SecondPassParser<'a> {
             });
             self.planted_c4_recorded_active.insert(*entid);
         }
+    }
+
+    /// Slice 4 — per-round item registry. ON-CHANGE emission (push a record
+    /// only when a tracked item entity's owner changes vs its last seen
+    /// owner, plus the first observation). Body lands in Task 4.
+    pub fn collect_item_registry_records(&mut self) {
+        if self.item_entity_ids.is_empty() {
+            return;
+        }
+        // Task 4: per-entity read + on-change diff + skin/owner resolution.
     }
 
     /// Sprint 5 / Task 4 — called when a CSmokeGrenadeProjectile entity is

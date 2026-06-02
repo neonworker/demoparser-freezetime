@@ -5,7 +5,7 @@ use crate::first_pass::read_bits::DemoParserError;
 use crate::first_pass::sendtables::Serializer;
 use crate::first_pass::stringtables::StringTable;
 use crate::first_pass::stringtables::UserInfo;
-use crate::second_pass::collect_data::{InfernoRecord, PlantedC4Record, ProjectileRecord, SmokeRecord};
+use crate::second_pass::collect_data::{InfernoRecord, ItemRegistryRecord, PlantedC4Record, ProjectileRecord, SmokeRecord};
 use crate::second_pass::decoder::QfMapper;
 use crate::second_pass::entities::Entity;
 use crate::second_pass::entities::PlayerMetaData;
@@ -62,6 +62,10 @@ pub struct SecondPassParser<'a> {
     /// whose slot ID was used by a previous lifecycle's record. Cleared
     /// on entity-delete (see `entities.rs`).
     pub planted_c4_recorded_active: AHashSet<i32>,
+    pub item_entity_ids: Vec<i32>,                              // Slice 4
+    pub item_prev_owner: AHashMap<i32, i32>,                    // Slice 4 — entity → last owner pawn idx (on-change diff; 0x7FFFFF/-1 = none)
+    pub item_skin_cache: AHashMap<i32, (u32, String, f32, u32)>,// Slice 4 — entity → (skin_id, name, wear, seed), captured-once when active
+    pub item_registry_records: Vec<ItemRegistryRecord>,        // Slice 4 — on-change records
     pub fullpackets_parsed: u32,
     pub wanted_players: AHashSet<u64>,
     pub wanted_ticks: AHashSet<i32>,
@@ -159,6 +163,7 @@ impl<'a> SecondPassParser<'a> {
             inferno_records: self.inferno_records,
             smoke_records: self.smoke_records,
             planted_c4_records: self.planted_c4_records,
+            item_registry_records: self.item_registry_records,    // Slice 4
             ptr: self.ptr,
             df_per_player: self.df_per_player,
             entities: self.entities,
@@ -226,6 +231,10 @@ impl<'a> SecondPassParser<'a> {
             smoke_entity_ids: Vec::new(),
             planted_c4_entity_ids: Vec::new(),
             planted_c4_recorded_active: AHashSet::default(),
+            item_entity_ids: Vec::new(),
+            item_prev_owner: AHashMap::default(),
+            item_skin_cache: AHashMap::default(),
+            item_registry_records: vec![],
             baselines: first_pass_output.baselines.clone(),
             string_tables: first_pass_output.string_tables.clone(),
             teams: Teams::new(),

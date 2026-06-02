@@ -50,6 +50,8 @@ pub enum EntityType {
     /// CPlantedC4 = the planted bomb entity (distinct from CC4, the
     /// bomb-in-player-hand). Carries `m_nBombSite` (0 = A, 1 = B).
     PlantedC4,
+    /// Slice 4 — droppable item entity (gun / Zeus / C4 / held grenade).
+    Item,
 }
 enum EntityCmd {
     Delete,
@@ -107,6 +109,10 @@ impl<'a> SecondPassParser<'a> {
                     // `collect_planted_c4_records`).
                     self.planted_c4_entity_ids.retain(|&id| id != entity_id);
                     self.planted_c4_recorded_active.remove(&entity_id);
+                    // Slice 4 — same hygiene for item-registry tracking.
+                    self.item_entity_ids.retain(|&id| id != entity_id);
+                    self.item_prev_owner.remove(&entity_id);
+                    self.item_skin_cache.remove(&entity_id);
                     if let Some(entry) = self.entities.get_mut(entity_id as usize) {
                         *entry = None;
                     }
@@ -359,7 +365,9 @@ impl<'a> SecondPassParser<'a> {
                 self.projectiles.insert(*entity_id);
             }
             EntityType::Rules => self.rules_entity_id = Some(*entity_id),
-            EntityType::C4 => self.c4_entity_id = Some(*entity_id),
+            // Slice 4 — the held C4 is tracked as both the bomb entity AND an item.
+            EntityType::C4 => { self.c4_entity_id = Some(*entity_id); self.item_entity_ids.push(*entity_id); }
+            EntityType::Item => self.item_entity_ids.push(*entity_id),               // Slice 4
             EntityType::PlantedC4 => self.planted_c4_entity_ids.push(*entity_id),    // Round-tagging branch
             EntityType::Inferno => self.inferno_entity_ids.push(*entity_id),         // Sprint 5
             EntityType::SmokeProjectile => {                                         // Sprint 5
@@ -414,6 +422,17 @@ impl<'a> SecondPassParser<'a> {
             "CInferno" => return Ok(EntityType::Inferno),                  // Sprint 5
             "CSmokeGrenadeProjectile" => return Ok(EntityType::SmokeProjectile),  // Sprint 5
             _ => {}
+        }
+        // Slice 4 — droppable item entities (guns + Zeus + C4 + held
+        // grenades). Exclude knives and in-flight projectiles. C4 is already
+        // matched above as EntityType::C4 — also track it as an Item.
+        let n = class.name.as_str();
+        let is_item = !n.contains("Projectile")
+            && !n.contains("Knife")
+            && (n.starts_with("CWeapon") || n == "CAK47" || n == "CDeagle" || n == "CC4"
+                || (n.contains("Grenade") && !n.contains("Player")));
+        if is_item {
+            return Ok(EntityType::Item);
         }
         let is_projectile_prop =
             (class.name.contains("Projectile") || class.name.contains("Grenade") || class.name.contains("Flash")) && !class.name.contains("Player");
