@@ -287,57 +287,100 @@ impl<'a> Parser<'a> {
     }
 
     fn combine_outputs(&self, second_pass_outputs: &mut Vec<SecondPassOutput>, first_pass_output: FirstPassOutput) -> DemoOutput {
-        // Combines all inner DemoOutputs into one big output
+        // Combines all inner DemoOutputs into one big output.
+        //
+        // Segment order is load-bearing: `combine_dfs` and every records
+        // concatenation depend on it, so we sort first and then drain in that
+        // sorted order. Draining moves each `SecondPassOutput`'s owned fields
+        // into accumulators instead of cloning them — this avoids holding both
+        // the originals (still resident in `second_pass_outputs`) and a full
+        // set of clones at the same time, which previously doubled peak RSS of
+        // the whole-demo columnar footprint.
         second_pass_outputs.sort_by_key(|x| x.ptr);
 
-        let mut dfs = second_pass_outputs.iter().map(|x| x.df.clone()).collect();
-        let all_dfs_combined = self.combine_dfs(&mut dfs, false);
-        let all_game_events: AHashSet<String> = AHashSet::from_iter(second_pass_outputs.iter().flat_map(|x| x.game_events_counter.iter().cloned()));
-        let mut all_prop_names: Vec<String> = Vec::from_iter(second_pass_outputs.iter().flat_map(|x| x.uniq_prop_names.iter().cloned()));
+        // Accumulators built by a single consuming pass over the segments.
+        let mut dfs: Vec<AHashMap<u32, PropColumn>> = Vec::with_capacity(second_pass_outputs.len());
+        // steamid -> per-segment dfs, kept in segment order so the per-steamid
+        // `combine_dfs` concatenation matches the original semantics exactly.
+        let mut per_player_acc: AHashMap<u64, Vec<AHashMap<u32, PropColumn>>> = AHashMap::default();
+
+        let mut chat_messages = Vec::new();
+        let mut item_drops = Vec::new();
+        let mut player_md = Vec::new();
+        let mut game_events = Vec::new();
+        let mut skins = Vec::new();
+        let mut convars: AHashMap<String, String> = AHashMap::default();
+        let mut projectiles = Vec::new();
+        let mut inferno_records = Vec::new();
+        let mut smoke_records = Vec::new();
+        let mut planted_c4_records = Vec::new();
+        let mut item_registry_records = Vec::new();
+        let mut voice_data = Vec::new();
+
+        let mut all_game_events: AHashSet<String> = AHashSet::default();
+        let mut all_prop_names: Vec<String> = Vec::new();
+
+        for output in second_pass_outputs.drain(..) {
+            dfs.push(output.df);
+            // Move each player's df out, preserving per-steamid segment order.
+            for (steamid, player_df) in output.df_per_player {
+                per_player_acc.entry(steamid).or_default().push(player_df);
+            }
+
+            chat_messages.extend(output.chat_messages);
+            item_drops.extend(output.item_drops);
+            player_md.extend(output.player_md);
+            game_events.extend(output.game_events);
+            skins.extend(output.skins);
+            convars.extend(output.convars);
+            projectiles.extend(output.projectiles);
+            inferno_records.extend(output.inferno_records);
+            smoke_records.extend(output.smoke_records);
+            planted_c4_records.extend(output.planted_c4_records);
+            item_registry_records.extend(output.item_registry_records); // Slice 4
+            voice_data.extend(output.voice_data);
+
+            all_game_events.extend(output.game_events_counter);
+            all_prop_names.extend(output.uniq_prop_names);
+        }
         all_prop_names.sort();
         all_prop_names.dedup();
-        // Remove temp props
+
+        let all_dfs_combined = self.combine_dfs(&mut dfs, false);
+
+        let mut pp = AHashMap::default();
+        for (steamid, mut v) in per_player_acc {
+            let combined = self.combine_dfs(&mut v, true);
+            pp.insert(steamid, combined);
+        }
+
+        // `first_pass_output.prop_controller` is a `&PropController`, so it must
+        // be cloned to own it — that is a deref-clone of borrowed metadata, not
+        // the columnar/records doubling this rewrite targets. `header` and
+        // `added_temp_props` are owned and are moved out.
         let mut prop_controller = first_pass_output.prop_controller.clone();
         for prop in first_pass_output.added_temp_props {
             prop_controller.wanted_player_props.retain(|x| x != &prop);
             prop_controller.prop_infos.retain(|x| &x.prop_name != &prop);
         }
-        let per_players: Vec<AHashMap<u64, AHashMap<u32, PropColumn>>> = second_pass_outputs.iter().map(|x| x.df_per_player.clone()).collect();
-        let mut all_steamids = AHashSet::default();
-        for entry in &per_players {
-            for (k, _) in entry {
-                all_steamids.insert(k);
-            }
-        }
-        let mut pp = AHashMap::default();
-        for steamid in all_steamids {
-            let mut v = vec![];
-            for output in &per_players {
-                if let Some(df) = output.get(&steamid) {
-                    v.push(df.clone());
-                }
-            }
-            let combined = self.combine_dfs(&mut v, true);
-            pp.insert(*steamid, combined);
-        }
 
         DemoOutput {
             prop_controller: prop_controller,
-            chat_messages: second_pass_outputs.iter().flat_map(|x| x.chat_messages.clone()).collect(),
-            item_drops: second_pass_outputs.iter().flat_map(|x| x.item_drops.clone()).collect(),
-            player_md: second_pass_outputs.iter().flat_map(|x| x.player_md.clone()).collect(),
-            game_events: second_pass_outputs.iter().flat_map(|x| x.game_events.clone()).collect(),
-            skins: second_pass_outputs.iter().flat_map(|x| x.skins.clone()).collect(),
-            convars: second_pass_outputs.iter().flat_map(|x| x.convars.clone()).collect(),
+            chat_messages: chat_messages,
+            item_drops: item_drops,
+            player_md: player_md,
+            game_events: game_events,
+            skins: skins,
+            convars: convars,
             df: all_dfs_combined,
             header: Some(first_pass_output.header),
             game_events_counter: all_game_events,
-            projectiles: second_pass_outputs.iter().flat_map(|x| x.projectiles.clone()).collect(),
-            inferno_records: second_pass_outputs.iter().flat_map(|x| x.inferno_records.clone()).collect(),
-            smoke_records: second_pass_outputs.iter().flat_map(|x| x.smoke_records.clone()).collect(),
-            planted_c4_records: second_pass_outputs.iter().flat_map(|x| x.planted_c4_records.clone()).collect(),
-            item_registry_records: second_pass_outputs.iter().flat_map(|x| x.item_registry_records.clone()).collect(),    // Slice 4
-            voice_data: second_pass_outputs.iter().flat_map(|x| x.voice_data.clone()).collect_vec(),
+            projectiles: projectiles,
+            inferno_records: inferno_records,
+            smoke_records: smoke_records,
+            planted_c4_records: planted_c4_records,
+            item_registry_records: item_registry_records, // Slice 4
+            voice_data: voice_data,
             df_per_player: pp,
             uniq_prop_names: all_prop_names,
         }
