@@ -2,6 +2,21 @@ use std::{io::Result, process::Command};
 
 fn main() -> Result<()> {
     println!("cargo::rerun-if-changed=GameTracking-CS2/Protobufs/demo.proto");
+    println!("cargo::rerun-if-env-changed=DEMOPARSER_REGEN_PROTOS");
+
+    // Proto regeneration is OPT-IN (freezetime fork patch). By default we
+    // compile the committed `src/protobuf.rs` (the prost output) alongside the
+    // static `src/maps.rs`. This makes builds reproducible (no silent tracking
+    // of SteamDatabase/GameTracking-CS2 HEAD), removes the GameTracking-CS2
+    // clone + network dependency from every build, and stops the regenerated
+    // file from re-dirtying the tracked tree after each `cargo build`.
+    //
+    // To refresh the bindings against the latest upstream CS2 protobufs:
+    //   DEMOPARSER_REGEN_PROTOS=1 cargo build -p csgoproto
+    // then review the `git diff` on `src/protobuf.rs` and commit it.
+    if std::env::var_os("DEMOPARSER_REGEN_PROTOS").is_none() {
+        return Ok(());
+    }
 
     Command::new("git")
         .args([
