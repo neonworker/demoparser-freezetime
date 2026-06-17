@@ -177,4 +177,29 @@ let mut occ = voxel::Occupancy::new();
 occ.apply(&frame);                              // fold in sequence order
 let voxels = occ.voxels();                      // Vec<(u8,u8,u8)>, each 0..31
 let w = voxel::voxel_to_world((x, y, z), detonate_pos);
+
+// Compact per-frame deltas (for persisting a decoded volume; see below):
+let deltas = voxel::delta_frames(&blob, size); // Vec<VoxelDelta>{ end_offset, added, removed }
 ```
+
+## Compact delta form for storage
+
+When persisting the *decoded* volume (rather than re-decoding the raw blob
+downstream), use [`delta_frames`]. It emits, per extended frame, only the voxels
+that turned **on**/**off** vs the previous frame, as 15-bit **column codes**
+`(x << 10) | (y << 5) | z` (via `pack_voxel`/`unpack_voxel`) — not Morton, so a
+consumer recovers `(x, y, z)` with three shifts and no de-interleave logic.
+
+Two properties make this both small and faithful:
+
+* **Delta exploits additivity.** Occupancy grows monotonically (apart from the
+  rare collision voids in `removed`), so per-frame deltas are small; accumulating
+  `added` minus `removed` in order losslessly reproduces every frame.
+* **Native cadence front-loads fidelity.** The parser emits frames densely during
+  the early bloom and sparsely once the volume settles (~⅔ of frames fall in the
+  first quarter of a smoke's life), so keeping *every* frame captures the fluid
+  early spread at full resolution while staying compact.
+
+Anchor each delta to the game-tick timeline with the per-tick
+`m_nVoxelFrameDataSize` series: a delta is live at the first tick whose cumulative
+size ≥ its `end_offset`.
