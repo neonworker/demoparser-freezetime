@@ -602,7 +602,7 @@ impl Serialize for ProjectileRecord {
     where
         S: serde::Serializer,
     {
-        let mut state = serializer.serialize_struct("ProjectileRecord", 9)?;
+        let mut state = serializer.serialize_struct("ProjectileRecord", 10)?;
         let steamid = match self.steamid {
             Some(u) => Some(u.to_string()),
             None => None,
@@ -616,6 +616,7 @@ impl Serialize for ProjectileRecord {
         state.serialize_field("z", &self.z)?;
         state.serialize_field("entity_id", &self.entity_id)?;
         state.serialize_field("bounces", &self.bounces)?;
+        state.serialize_field("voxel_frame_data_size", &self.voxel_frame_data_size)?;
         state.end()
     }
 }
